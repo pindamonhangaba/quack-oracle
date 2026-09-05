@@ -301,6 +301,20 @@ static bool WaitForBio(BIO *bio, uint32_t timeout_seconds) {
                   &timeout) > 0;
 }
 
+static void CompleteTlsHandshake(BIO *bio, uint32_t timeout_seconds) {
+    while (true) {
+        const auto result = BIO_do_handshake(bio);
+        if (result == 1) {
+            return;
+        }
+        if (!BIO_should_retry(bio) || !WaitForBio(bio, timeout_seconds)) {
+            const auto error_detail = DrainOpenSslErrors();
+            throw ProtocolError(ProtocolErrorKind::TRUNCATED,
+                                "Oracle TLS renegotiation failed or timed out: " + error_detail);
+        }
+    }
+}
+
 OpenSslByteStream::OpenSslByteStream(std::unique_ptr<Impl> implementation_p)
     : implementation(std::move(implementation_p)) {
 }
@@ -572,6 +586,23 @@ void OpenSslByteStream::SendUrgent(uint8_t value) {
         throw ProtocolError(ProtocolErrorKind::INVALID_STATE, "Oracle TCP urgent-byte send failed");
     }
 #endif
+}
+
+void OpenSslByteStream::RenegotiateTls() {
+    if (!implementation || implementation->closed) {
+        throw ProtocolError(ProtocolErrorKind::INVALID_STATE, "Oracle TCP stream is closed");
+    }
+    if (!implementation->use_tls) {
+        throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "TLS renegotiation requires a TCPS stream");
+    }
+    SSL *ssl = nullptr;
+    RequireOpenSsl(BIO_get_ssl(implementation->bio, &ssl), "retrieving TLS session");
+    if (!ssl) {
+        throw ProtocolError(ProtocolErrorKind::INVALID_STATE, "OpenSSL returned no TLS session");
+    }
+    RequireOpenSsl(SSL_clear(ssl), "resetting TLS session");
+    SSL_set_connect_state(ssl);
+    CompleteTlsHandshake(implementation->bio, implementation->read_timeout_seconds);
 }
 
 void OpenSslByteStream::Close() {

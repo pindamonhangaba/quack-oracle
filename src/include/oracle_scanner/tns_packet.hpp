@@ -8,6 +8,7 @@ namespace oracle_scanner {
 
 constexpr size_t TNS_PACKET_HEADER_SIZE = 8;
 constexpr size_t MAX_TNS_PACKET_LENGTH = 16U << 20U;
+constexpr uint8_t TNS_PACKET_FLAG_TLS_RENEGOTIATION = 0x08;
 constexpr uint16_t TNS_DATA_FLAG_EOF = 0x0040;
 constexpr uint16_t TNS_DATA_FLAG_END_OF_RESPONSE = 0x2000;
 

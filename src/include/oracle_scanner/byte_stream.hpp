@@ -22,6 +22,7 @@ public:
     // transport with no out-of-band channel — TLS, and anything tunnelled —
     // has to be able to say so by kind rather than by type.
     virtual void SendUrgent(uint8_t value);
+    virtual void RenegotiateTls();
 };
 
 void ReadExact(ByteStream &stream, uint8_t *destination, size_t size);
@@ -69,6 +70,7 @@ public:
     size_t Write(const uint8_t *source, size_t size) override;
     // TNS over TLS has no equivalent, and this rejects it explicitly.
     void SendUrgent(uint8_t value) override;
+    void RenegotiateTls() override;
     void Close() override;
 
 private:
@@ -87,6 +89,7 @@ public:
 
     void Send(const TnsPacket &packet);
     void Send(const std::vector<TnsPacket> &packets);
+    void RenegotiateTls();
     TnsPacket Receive();
 
 private:

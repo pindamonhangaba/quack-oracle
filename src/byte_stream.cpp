@@ -14,6 +14,10 @@ void ByteStream::SendUrgent(uint8_t value) {
     throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "this Oracle transport has no out-of-band channel");
 }
 
+void ByteStream::RenegotiateTls() {
+    throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "this Oracle transport does not support TLS renegotiation");
+}
+
 void ReadExact(ByteStream &stream, uint8_t *destination, size_t size) {
     size_t offset = 0;
     while (offset < size) {
@@ -65,6 +69,10 @@ void TnsPacketStream::Send(const std::vector<TnsPacket> &packets) {
         wire.insert(wire.end(), encoded.begin(), encoded.end());
     }
     WriteAll(stream, wire.data(), wire.size());
+}
+
+void TnsPacketStream::RenegotiateTls() {
+    stream.RenegotiateTls();
 }
 
 TnsPacket TnsPacketStream::Receive() {

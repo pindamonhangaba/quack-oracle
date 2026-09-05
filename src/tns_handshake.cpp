@@ -75,6 +75,9 @@ TnsConnectResult RunTnsConnect(TnsPacketStream &stream, const std::string &descr
     stream.Send(request);
     auto response = stream.Receive();
     if (response.type == TnsPacketType::RESEND) {
+        if ((response.flags & TNS_PACKET_FLAG_TLS_RENEGOTIATION) != 0) {
+            stream.RenegotiateTls();
+        }
         stream.Send(request);
         response = stream.Receive();
     }

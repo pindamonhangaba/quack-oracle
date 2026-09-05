@@ -450,12 +450,16 @@ public:
     void Close() override {
         closed = true;
     }
+    void RenegotiateTls() override {
+        renegotiated = true;
+    }
 
     std::vector<uint8_t> input;
     std::vector<uint8_t> output;
     size_t read_offset = 0;
     size_t fragment;
     bool closed = false;
+    bool renegotiated = false;
 };
 
 static void TestPacketStream() {
@@ -515,13 +519,14 @@ static void TestConnectHandshake() {
     accept_payload[26] = 0x20;
     accept_payload[27] = 0x00;
     accept_payload[36] = 1;
-    auto accepted_wire = EncodeTnsPacket(TnsPacketType::RESEND, 0, {}, false);
+    auto accepted_wire = EncodeTnsPacket(TnsPacketType::RESEND, TNS_PACKET_FLAG_TLS_RENEGOTIATION, {}, false);
     const auto accept_wire = EncodeTnsPacket(TnsPacketType::ACCEPT, 0, accept_payload, false);
     accepted_wire.insert(accepted_wire.end(), accept_wire.begin(), accept_wire.end());
     FragmentedStream accepted(std::move(accepted_wire), 2);
     TnsPacketStream accepted_packets(accepted, false);
     auto result = RunTnsConnect(accepted_packets, "(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=X)))");
     CHECK(result.disposition == TnsConnectDisposition::ACCEPTED && result.negotiated_sdu == 8192 && result.check_oob);
+    CHECK(accepted.renegotiated);
     const auto first_packet_length = ReadUInt16(accepted.output, 0);
     CHECK(DecodeTnsPacket(std::vector<uint8_t>(accepted.output.begin(), accepted.output.begin() + first_packet_length), false).type ==
            TnsPacketType::CONNECT);
