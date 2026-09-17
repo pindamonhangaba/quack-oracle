@@ -88,8 +88,8 @@ LogicalType MappedType(const OracleColumn &column) {
     case 113: // BLOB
         return LogicalType::BLOB;
     case 112: // CLOB
-        // A CLOB read comes back as the session's character set, which this
-        // client negotiates as UTF-8 — the same bytes a VARCHAR2 arrives in.
+        // The native session resolves the locator and converts each supported
+        // CLOB representation to UTF-8 before the value reaches this layer.
         return LogicalType::VARCHAR;
     case 100: // BINARY_FLOAT
         return LogicalType::FLOAT;

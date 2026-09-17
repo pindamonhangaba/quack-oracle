@@ -193,7 +193,7 @@ homogeneous, so `[1, 'one', DATE '2026-01-02']` cannot even be constructed. A
 | `NUMBER(p,0)`, p ≤ 18 | `BIGINT` | |
 | `NUMBER(p,s)`, p ≤ 38, 1 ≤ s ≤ p | `DECIMAL(p,s)` | |
 | `NUMBER` otherwise | `VARCHAR` | Unconstrained NUMBER is exact only as text |
-| `VARCHAR2`, `CHAR` | `VARCHAR` | Database character set, UTF-8 here |
+| `VARCHAR2`, `CHAR` | `VARCHAR` | `AL32UTF8` or `WE8ISO8859P1` database character set; UTF-8 here |
 | `DATE` | `TIMESTAMP` | An Oracle `DATE` carries a time; it is not a DuckDB `DATE` |
 | `TIMESTAMP(n)` | `TIMESTAMP`, or `TIMESTAMP_NS` when n > 6 | |
 | `TIMESTAMP WITH TIME ZONE` | `VARCHAR` | The value carries its own offset, which `TIMESTAMPTZ` would drop |
@@ -219,6 +219,20 @@ There is no setting that changes this mapping. One was considered and refused:
 a mode that silently narrowed unconstrained `NUMBER` would make correctness
 depend on a flag, and a reconciliation that is exact in one session and two
 cents off in another is worse than one that always asks for a cast.
+
+### Database character sets
+
+The TTC negotiation accepts Oracle database character set IDs `873`
+(`AL32UTF8`) and `31` (`WE8ISO8859P1`). The client continues to advertise
+`AL32UTF8` as its client encoding, so ordinary `CHAR` and `VARCHAR2` values,
+SQL text, and binds are exposed as UTF-8 bytes. The server's database character
+set is detected during negotiation; there is no charset override secret.
+
+`WE8ISO8859P1` cannot store every Unicode character. Writes outside its
+repertoire retain Oracle's normal server-side error or conversion behavior;
+the extension does not silently replace or reinterpret those values. `NCHAR`
+and `NVARCHAR2` remain unsupported, while `NCLOB` uses its separate national
+character-set encoding.
 
 **Refused while binding**, before any fetch, each naming its reason:
 
@@ -264,8 +278,10 @@ empty (they stay distinct, as in Oracle), a 240 000-character CLOB and a
 240 007-byte BLOB compared byte for byte against values rebuilt in DuckDB, and a
 40 000-character NCLOB.
 
-Character LOB content arrives as AL16UTF16 whatever the database character set
-is, and is converted to UTF-8 here. That is why `NCLOB` reads while `NCHAR` and
+Character LOB content is decoded from its locator metadata: an ordinary CLOB
+may arrive as UTF-8 or flagged UTF-16 (including the legacy little-endian
+variant), while an NCLOB is decoded as UTF-16BE. All forms are exposed as
+strictly validated UTF-8 here. That is why `NCLOB` reads while `NCHAR` and
 `NVARCHAR2` do not: their values travel in the row, not through a LOB read.
 
 ---

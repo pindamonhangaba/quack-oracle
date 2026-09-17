@@ -61,6 +61,10 @@ ConnectionConfig ConnectionFromSecret(ClientContext &context, const std::string 
     password = RequireString(*secret, "password");
     config.connect_timeout_seconds = OptionalUInt(*secret, "connect_timeout", 10);
     config.read_timeout_seconds = OptionalUInt(*secret, "read_timeout", 30);
+    const auto disable_oob = secret->TryGetValue("disable_oob");
+    if (!disable_oob.IsNull()) {
+        config.disable_oob = disable_oob.GetValue<bool>();
+    }
 
     const auto tns_alias = OptionalString(*secret, "tns_alias");
     const auto tls_server_name = OptionalString(*secret, "tls_server_name");

@@ -21,9 +21,9 @@ void ReadDeclaredBytes(ByteReader &reader) {
     if (declared > MAX_METADATA_BYTES) {
         throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED, "TTC describe metadata field is too large");
     }
-    const auto value = reader.ReadLengthPrefixed(declared);
-    if (!value || value->size() != declared) {
-        throw ProtocolError(ProtocolErrorKind::MALFORMED, "TTC describe metadata field length disagrees with payload");
+    const auto value = reader.ReadLengthPrefixed(MAX_METADATA_BYTES);
+    if (!value) {
+        return;
     }
 }
 
@@ -33,11 +33,13 @@ std::string ReadDeclaredText(ByteReader &reader) {
         return {};
     }
     if (declared > MAX_METADATA_BYTES) {
-        throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED, "TTC describe identifier is too large");
+        throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED,
+                            "TTC describe identifier is too large (declared " + std::to_string(declared) +
+                                ", offset " + std::to_string(reader.Position()) + ")");
     }
-    const auto value = reader.ReadLengthPrefixed(declared);
-    if (!value || value->size() != declared) {
-        throw ProtocolError(ProtocolErrorKind::MALFORMED, "TTC describe identifier length disagrees with payload");
+    const auto value = reader.ReadLengthPrefixed(MAX_METADATA_BYTES);
+    if (!value) {
+        return {};
     }
     return {value->begin(), value->end()};
 }

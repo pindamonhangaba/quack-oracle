@@ -28,7 +28,7 @@ void WriteTwoLengths(ByteWriter &writer, const std::string &value) {
     }
 }
 
-std::string ReadTwoLengths(ByteReader &reader) {
+std::string ReadReturnParameterString(ByteReader &reader) {
     const auto declared_size = reader.ReadUB4();
     if (declared_size > MAX_PARAMETER_BYTES) {
         throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED, "TTC parameter exceeds supported length");
@@ -36,11 +36,45 @@ std::string ReadTwoLengths(ByteReader &reader) {
     if (declared_size == 0) {
         return {};
     }
-    const auto encoded = reader.ReadLengthPrefixed(declared_size);
-    if (!encoded || encoded->size() != declared_size) {
-        throw ProtocolError(ProtocolErrorKind::MALFORMED, "TTC parameter byte counts disagree");
+    const auto encoded = reader.ReadLengthPrefixed(MAX_PARAMETER_BYTES);
+    if (!encoded) {
+        return {};
     }
     return {encoded->begin(), encoded->end()};
+}
+
+std::vector<TtcParameter> DecodeParameterList(ByteReader &reader, uint32_t count) {
+    std::vector<TtcParameter> result;
+    result.reserve(count);
+    for (uint32_t index = 0; index < count; index++) {
+        const auto parameter_start = reader.Position();
+        size_t key_end = parameter_start;
+        size_t value_end = parameter_start;
+        try {
+            TtcParameter parameter;
+            parameter.key = ReadReturnParameterString(reader);
+            key_end = reader.Position();
+            parameter.value = ReadReturnParameterString(reader);
+            value_end = reader.Position();
+            parameter.flags = reader.ReadUB4();
+            if (parameter.key.empty()) {
+                throw ProtocolError(ProtocolErrorKind::MALFORMED, "TTC parameter key is empty");
+            }
+            result.push_back(std::move(parameter));
+        } catch (const ProtocolError &error) {
+            std::string next_byte = "none";
+            if (reader.Remaining() > 0) {
+                next_byte = std::to_string(reader.PeekByte());
+            }
+            throw ProtocolError(error.Kind(), "TTC return parameter " + std::to_string(index) + " (start " +
+                                             std::to_string(parameter_start) + ", key-end " + std::to_string(key_end) +
+                                             ", value-end " + std::to_string(value_end) + ", offset " +
+                                             std::to_string(reader.Position()) + ", remaining " +
+                                             std::to_string(reader.Remaining()) + ", next byte " + next_byte +
+                                             "): " + error.what());
+        }
+    }
+    return result;
 }
 
 uint32_t ParseIterations(const std::string &value) {
@@ -110,7 +144,7 @@ std::vector<uint8_t> EncodeTtcParameters(const std::vector<TtcParameter> &parame
         throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED, "too many TTC parameters");
     }
     ByteWriter writer;
-    writer.WriteByte(TTC_MESSAGE_PARAMETER).WriteUB4(static_cast<uint32_t>(parameters.size()));
+    writer.WriteByte(TTC_MESSAGE_PARAMETER).WriteUB2(static_cast<uint16_t>(parameters.size()));
     for (const auto &parameter : parameters) {
         WriteTwoLengths(writer, parameter.key);
         WriteTwoLengths(writer, parameter.value);
@@ -124,27 +158,11 @@ std::vector<TtcParameter> DecodeTtcParameters(const std::vector<uint8_t> &messag
     if (reader.ReadByte() != TTC_MESSAGE_PARAMETER) {
         throw ProtocolError(ProtocolErrorKind::MALFORMED, "expected TTC PARAMETER message");
     }
-    const auto count = reader.ReadUB4();
+    const auto count = reader.ReadUB2();
     if (count > MAX_PARAMETER_COUNT) {
         throw ProtocolError(ProtocolErrorKind::LIMIT_EXCEEDED, "too many TTC parameters");
     }
-    std::vector<TtcParameter> result;
-    result.reserve(count);
-    for (uint32_t index = 0; index < count; index++) {
-        TtcParameter parameter;
-        parameter.key = ReadTwoLengths(reader);
-        parameter.value = ReadTwoLengths(reader);
-        parameter.flags = reader.ReadUB4();
-        if (parameter.key.empty()) {
-            throw ProtocolError(ProtocolErrorKind::MALFORMED, "TTC parameter key is empty");
-        }
-        result.push_back(std::move(parameter));
-    }
-    // Oracle 19c may append a versioned session-property trailer after the
-    // parameter list. The bounded, counted parameter grammar above has
-    // already consumed every field required by O5LOGON; the opaque trailer
-    // is deliberately not interpreted by this layer.
-    return result;
+    return DecodeParameterList(reader, count);
 }
 
 O5LogonChallenge O5LogonChallengeFromParameters(const std::vector<TtcParameter> &parameters) {

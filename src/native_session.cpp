@@ -64,12 +64,13 @@ public:
                 if (!IsOracleLobType(columns[index].oracle_type) || !row[index]) {
                     continue;
                 }
-                row[index] = ReadWholeLob(*row[index], columns[index].oracle_type == ORACLE_WIRE_TYPE_CLOB);
+                row[index] = ReadWholeLob(*row[index], columns[index]);
             }
         }
     }
 
-    std::vector<uint8_t> ReadWholeLob(const std::vector<uint8_t> &locator, bool is_character) {
+    std::vector<uint8_t> ReadWholeLob(const std::vector<uint8_t> &locator, const OracleColumn &column) {
+        const bool is_character = column.oracle_type == ORACLE_WIRE_TYPE_CLOB;
         TtcLobRequest length_request;
         length_request.sequence = NextCursorSequence();
         length_request.locator = locator;
@@ -93,10 +94,17 @@ public:
                 // only alternative to looping on an unchanging offset.
                 break;
             }
+            if (is_character && response.amount == 0) {
+                throw ProtocolError(ProtocolErrorKind::MALFORMED,
+                                    "Oracle CLOB read returned data without character progress");
+            }
+            if (response.amount > total - served) {
+                throw ProtocolError(ProtocolErrorKind::MALFORMED, "Oracle LOB read exceeded its reported length");
+            }
             content.insert(content.end(), response.data.begin(), response.data.end());
             served += response.amount != 0 ? response.amount : response.data.size();
         }
-        return is_character ? DecodeUtf16BeToUtf8(content) : content;
+        return is_character ? DecodeTtcCharacterLobToUtf8(content, locator, column.character_set_form) : content;
     }
 
     uint8_t NextCursorSequence() {

@@ -357,18 +357,18 @@ static void TestTtcDescribeInfoVersionGates() {
     writer.WriteUB4(1); // column count
     writer.WriteByte(0); // descriptor flags
     writer.WriteByte(2).WriteByte(0).WriteByte(0).WriteByte(0); // NUMBER metadata prefix
-    writer.WriteUB4(22).WriteUB4(0).WriteUB8(0).WriteUB4(0);
+    writer.WriteUB4(22).WriteUB4(0).WriteUB8(0).WriteUB4(4).WriteLengthPrefixed(std::vector<uint8_t> {'O'});
     writer.WriteUB2(0).WriteUB2(0).WriteByte(0).WriteUB4(0).WriteUB4(0); // oaccolid
     // TTIPRO version 6 still carries oaccolid and nullable in a modern OALL8
     // DESCRIBE_INFO response; only the server-version number is legacy.
-    writer.WriteByte(0).WriteByte(0).WriteUB4(0).WriteUB4(0).WriteUB4(0);
+    writer.WriteByte(0).WriteByte(0).WriteUB4(4).WriteLengthPrefixed(std::vector<uint8_t> {'N'}).WriteUB4(0).WriteUB4(0);
     writer.WriteUB2(0).WriteUB4(0);
     writer.WriteUB4(0).WriteUB4(0).WriteUB4(0).WriteUB4(0).WriteUB4(0).WriteUB4(0);
 
     const auto describe = DecodeTtcDescribeInfoPrefix(writer.Data(), 6);
     CHECK(describe.columns.size() == 1);
     CHECK(describe.columns[0].oracle_type == 2);
-    CHECK(!describe.columns[0].nullable && describe.columns[0].name.empty());
+    CHECK(!describe.columns[0].nullable && describe.columns[0].name == "N");
     CHECK(describe.bytes_consumed == writer.Data().size());
 }
 
@@ -504,6 +504,11 @@ static void TestConnectPackets() {
     CHECK(payload[24] == 0x84 && payload[25] == 0x84 && payload[52] == 0x20 && payload[56] == 0x20 &&
            payload[65] == 0x01);
     CHECK(std::string(payload.begin() + 66, payload.end()) == descriptor);
+
+        TnsConnectOptions without_oob;
+        without_oob.supports_oob = false;
+        packets = BuildTnsConnectPackets(descriptor, without_oob);
+        CHECK(ReadUInt16(packets[0].payload, 4) == 0x0001 && packets[0].payload[65] == 0x00);
 
     std::string long_descriptor(231, 'x');
     packets = BuildTnsConnectPackets(long_descriptor);
@@ -763,6 +768,33 @@ static void TestTtcParameters() {
     CHECK(decoded.size() == parameters.size() && decoded[0].flags == 0x0c);
     auto challenge = O5LogonChallengeFromParameters(decoded);
     CHECK(challenge.verifier_iterations == 4096 && challenge.combo_key_iterations == 3);
+
+    ByteWriter response;
+    response.WriteByte(TTC_MESSAGE_PARAMETER).WriteUB2(static_cast<uint16_t>(parameters.size()));
+    for (const auto &parameter : parameters) {
+        response.WriteUB4(static_cast<uint32_t>(parameter.key.size()))
+            .WriteLengthPrefixed(std::vector<uint8_t>(parameter.key.begin(), parameter.key.end()));
+        response.WriteUB4(static_cast<uint32_t>(parameter.value.size()))
+            .WriteLengthPrefixed(std::vector<uint8_t>(parameter.value.begin(), parameter.value.end()));
+        response.WriteUB4(parameter.flags);
+    }
+    auto response_decoded = DecodeTtcParameters(response.Data());
+    CHECK(response_decoded.size() == parameters.size() && response_decoded[1].key == "AUTH_SESSKEY");
+
+        ByteWriter mismatched_outer_length;
+        mismatched_outer_length.WriteByte(TTC_MESSAGE_PARAMETER).WriteUB2(1);
+        mismatched_outer_length.WriteUB4(4).WriteLengthPrefixed(std::vector<uint8_t> {'K', 'E', 'Y'});
+        mismatched_outer_length.WriteUB4(7).WriteLengthPrefixed(std::vector<uint8_t> {'V'}).WriteUB4(0);
+        auto mismatched_decoded = DecodeTtcParameters(mismatched_outer_length.Data());
+        CHECK(mismatched_decoded.size() == 1 && mismatched_decoded[0].key == "KEY" &&
+            mismatched_decoded[0].value == "V");
+
+        ByteWriter malformed_return;
+        malformed_return.WriteByte(TTC_MESSAGE_PARAMETER).WriteUB2(1);
+        malformed_return.WriteUB4(1).WriteLengthPrefixed(std::vector<uint8_t> {'K'});
+        malformed_return.WriteUB4(1).WriteByte(2).WriteByte('V');
+        ExpectError(ProtocolErrorKind::TRUNCATED, [&] { DecodeTtcParameters(malformed_return.Data()); });
+
     decoded.push_back(decoded.front());
     ExpectError(ProtocolErrorKind::MALFORMED, [&] { O5LogonChallengeFromParameters(decoded); });
     ExpectError(ProtocolErrorKind::MALFORMED, [] { DecodeTtcParameters({7, 0}); });
@@ -1034,29 +1066,63 @@ static void TestTtcRowDataCodec() {
 static void TestTtcNegotiation() {
     TtcNegotiationOptions options;
     options.driver_name = "oracle_scanner_test";
+    const auto default_data_types = BuildTtcDataTypesRequest();
+    CHECK(default_data_types[0] == TTC_MESSAGE_DATA_TYPES && default_data_types[1] == 0x69 &&
+        default_data_types[2] == 0x03 && default_data_types[3] == 0x69 && default_data_types[4] == 0x03);
+    TtcNegotiationOptions explicit_capabilities;
+    explicit_capabilities.compile_capabilities = {1};
+    const auto explicit_data_types = BuildTtcDataTypesRequest(explicit_capabilities);
+    CHECK(explicit_data_types[0] == TTC_MESSAGE_DATA_TYPES && explicit_data_types[1] == 0x69 &&
+        explicit_data_types[2] == 0x03 && explicit_data_types[3] == 0x69 && explicit_data_types[4] == 0x03);
     auto request = BuildTtcProtocolRequest(options);
     CHECK(request[0] == TTC_MESSAGE_PROTOCOL && request[1] == 6 && request[2] == 0);
     CHECK(std::string(request.begin() + 3, request.end() - 1) == options.driver_name);
 
-    ByteWriter server;
-    server.WriteByte(TTC_MESSAGE_PROTOCOL).WriteByte(6).WriteByte(0).WriteNullTerminated("Oracle Database");
-    server.WriteUInt16LE(ORACLE_CHARSET_AL32UTF8).WriteByte(0).WriteUInt16LE(0).WriteUInt16BE(0);
-    server.WriteByte(0).WriteByte(0);
-    const auto protocol_response = server.Take();
-    const std::vector<uint8_t> data_type_response {TTC_MESSAGE_DATA_TYPES, 0, 0};
-    std::vector<uint8_t> inbound;
-    for (const auto &packet : EncodeTnsDataPackets(protocol_response, true, 64)) {
-        inbound.insert(inbound.end(), packet.begin(), packet.end());
-    }
-    for (const auto &packet : EncodeTnsDataPackets(data_type_response, true, 64)) {
-        inbound.insert(inbound.end(), packet.begin(), packet.end());
-    }
-    FragmentedStream stream(inbound, 5);
-    TnsPacketStream packets(stream, true, 64);
-    TtcChannel channel(packets, 64);
-    auto info = RunTtcNegotiation(channel, options);
+    const auto run_charset = [&](uint16_t charset_id) {
+        ByteWriter server;
+        server.WriteByte(TTC_MESSAGE_PROTOCOL).WriteByte(6).WriteByte(0).WriteNullTerminated("Oracle Database");
+        server.WriteUInt16LE(charset_id).WriteByte(0).WriteUInt16LE(0).WriteUInt16BE(0);
+        server.WriteByte(0).WriteByte(0);
+        const auto protocol_response = server.Take();
+        const std::vector<uint8_t> data_type_response {TTC_MESSAGE_DATA_TYPES, 0, 0};
+        std::vector<uint8_t> inbound;
+        for (const auto &packet : EncodeTnsDataPackets(protocol_response, true, 64)) {
+            inbound.insert(inbound.end(), packet.begin(), packet.end());
+        }
+        for (const auto &packet : EncodeTnsDataPackets(data_type_response, true, 64)) {
+            inbound.insert(inbound.end(), packet.begin(), packet.end());
+        }
+        FragmentedStream stream(inbound, 5);
+        TnsPacketStream packets(stream, true, 64);
+        TtcChannel channel(packets, 64);
+        return RunTtcNegotiation(channel, options);
+    };
+
+    const auto info = run_charset(ORACLE_CHARSET_AL32UTF8);
     CHECK(info.server_version == 6 && info.server_banner == "Oracle Database");
     CHECK(info.charset_id == ORACLE_CHARSET_AL32UTF8);
+    CHECK(run_charset(ORACLE_CHARSET_WE8ISO8859P1).charset_id == ORACLE_CHARSET_WE8ISO8859P1);
+
+    ByteWriter unsupported_server;
+    unsupported_server.WriteByte(TTC_MESSAGE_PROTOCOL).WriteByte(6).WriteByte(0).WriteNullTerminated("Oracle Database");
+    unsupported_server.WriteUInt16LE(1252).WriteByte(0).WriteUInt16LE(0).WriteUInt16BE(0);
+    unsupported_server.WriteByte(0).WriteByte(0);
+    const auto unsupported_response = unsupported_server.Take();
+    std::vector<uint8_t> unsupported_inbound;
+    for (const auto &packet : EncodeTnsDataPackets(unsupported_response, true, 64)) {
+        unsupported_inbound.insert(unsupported_inbound.end(), packet.begin(), packet.end());
+    }
+    FragmentedStream unsupported_stream(unsupported_inbound, 5);
+    TnsPacketStream unsupported_packets(unsupported_stream, true, 64);
+    TtcChannel unsupported_channel(unsupported_packets, 64);
+    bool refused_unsupported_charset = false;
+    try {
+        (void)RunTtcNegotiation(unsupported_channel, options);
+    } catch (const ProtocolError &error) {
+        refused_unsupported_charset = error.Kind() == ProtocolErrorKind::UNSUPPORTED &&
+                                      std::string(error.what()).find("1252") != std::string::npos;
+    }
+    CHECK(refused_unsupported_charset);
     ExpectError(ProtocolErrorKind::UNSUPPORTED,
                 [] { ParseTtcProtocolResponse({0xde, 0xad, 0xbe, 0xef}); });
 }
@@ -2290,7 +2356,7 @@ static void TestLiveTnsNegotiation() {
         return;
     }
     const auto protocol = connection->Negotiate();
-    CHECK(protocol.charset_id == ORACLE_CHARSET_AL32UTF8);
+    CHECK(protocol.charset_id == ORACLE_CHARSET_AL32UTF8 || protocol.charset_id == ORACLE_CHARSET_WE8ISO8859P1);
     if (stage && std::string(stage) == "auth") {
         connection->AuthenticateO5Logon(RequiredEnvironment("ORA19C_USER"), RequiredEnvironment("ORA19C_PASSWORD"));
         CHECK(connection->State() == OracleConnectionState::AUTHENTICATED);
@@ -2909,9 +2975,8 @@ static void TestLobGetLengthResponse() {
                              lob_get_length_response.end())));
 }
 
-// A CLOB read comes back as AL16UTF16 whatever the content is: these ten
-// Cyrillic characters arrive as twenty bytes, the same width the ASCII sample
-// does. Live 19c.
+// A flagged CLOB read comes back as AL16UTF16: these ten Cyrillic characters
+// arrive as twenty bytes, the same width the ASCII sample does. Live 19c.
 static void TestLobReadResponseIsUtf16ForAClob() {
     const std::vector<uint8_t> lob_read_clob_response {
     0x0e, 0xfe, 0x01, 0x14, 0x04, 0x3f, 0x04, 0x40, 0x04, 0x38, 0x04, 0x32, 0x04, 0x35, 0x04, 0x42, 0x00, 0x20,
@@ -3062,6 +3127,38 @@ static void TestUtf16BeConversion() {
         }
         CHECK(refused);
     }
+}
+
+static void TestCharacterLobEncodingSelection() {
+    const std::vector<uint8_t> utf16_locator {0, 0, 0, 0, 0, 0, 0x80, 0};
+    const std::vector<uint8_t> utf8_locator {0, 0, 0, 0, 0, 0, 0x00, 0};
+    const std::vector<uint8_t> little_endian_locator {0, 0, 0, 0, 0, 0, 0x80, 0x40};
+    const std::vector<uint8_t> accented_utf8 {0x61, 0xc3, 0xa7, 0xc3, 0xa3, 0x6f};
+    const std::vector<uint8_t> accented_utf16 {0x00, 0x61, 0x00, 0xe7, 0x00, 0xe3, 0x00, 0x6f};
+
+    CHECK(DecodeTtcCharacterLobToUtf8(accented_utf16, utf16_locator, 1) == accented_utf8);
+    CHECK(DecodeTtcCharacterLobToUtf8({0x61, 0x00, 0xe7, 0x00, 0xe3, 0x00, 0x6f, 0x00},
+                                      little_endian_locator, 1) == accented_utf8);
+    CHECK(DecodeTtcCharacterLobToUtf8(accented_utf8, utf8_locator, 1) == accented_utf8);
+    CHECK(DecodeTtcCharacterLobToUtf8(accented_utf16, utf8_locator, 2) == accented_utf8);
+        CHECK(DecodeTtcCharacterLobToUtf8({0x3d, 0xd8, 0x00, 0xde}, little_endian_locator, 1) ==
+            std::vector<uint8_t>({0xf0, 0x9f, 0x98, 0x80}));
+    CHECK(DecodeTtcCharacterLobToUtf8({}, utf8_locator, 1).empty());
+
+    for (const std::vector<uint8_t> &bad : {std::vector<uint8_t>({0xc0, 0x80}),
+                                            std::vector<uint8_t>({0xe0, 0x80, 0x80}),
+                                            std::vector<uint8_t>({0xed, 0xa0, 0x80}),
+                                            std::vector<uint8_t>({0xf4, 0x90, 0x80, 0x80}),
+                                            std::vector<uint8_t>({0xe2, 0x82})}) {
+        ExpectError(ProtocolErrorKind::MALFORMED,
+                    [&] { DecodeTtcCharacterLobToUtf8(bad, utf8_locator, 1); });
+    }
+    ExpectError(ProtocolErrorKind::MALFORMED,
+                [&] { DecodeTtcCharacterLobToUtf8(accented_utf8, {0, 0, 0, 0, 0, 0, 0}, 1); });
+    ExpectError(ProtocolErrorKind::UNSUPPORTED,
+                [&] { DecodeTtcCharacterLobToUtf8(accented_utf8, utf8_locator, 3); });
+    ExpectError(ProtocolErrorKind::UNSUPPORTED,
+                [&] { DecodeTtcCharacterLobToUtf8(accented_utf8, {0, 0, 0, 0, 0, 0, 0, 0x40}, 1); });
 }
 
 // The transport seam: a real TNS handshake, driven end to end against scripted
@@ -3235,14 +3332,19 @@ static void TestConnectRunsThroughTheTransportSeam() {
 // has to come from the transport by kind rather than by type, which is why
 // SendUrgent is on the interface with this default.
 static void TestTransportWithoutOutOfBandRefusesTheOobProbe() {
+    std::deque<std::vector<uint8_t>> written;
     ScopedOracleTransportFactory installed(
         [&](const std::string &, uint16_t, uint32_t, uint32_t, bool, const TlsConfiguration &)
-            -> std::unique_ptr<ByteStream> { return std::make_unique<ScriptedTransport>(AcceptPacketBytes(true)); });
+            -> std::unique_ptr<ByteStream> {
+            written.emplace_back();
+            return std::make_unique<ScriptedTransport>(AcceptPacketBytes(true), &written.back());
+        });
 
     ConnectionConfig config;
     config.host = "first.example";
     config.port = 1521;
     config.service_name = "svc";
+    config.client_program = "protocol_test";
 
     bool refused = false;
     try {
@@ -3251,6 +3353,14 @@ static void TestTransportWithoutOutOfBandRefusesTheOobProbe() {
         refused = error.Kind() == ProtocolErrorKind::UNSUPPORTED;
     }
     CHECK(refused);
+
+    config.disable_oob = true;
+    auto connection = TnsClientConnection::Connect(config);
+    CHECK(connection != nullptr && connection->State() == OracleConnectionState::TRANSPORT_CONNECTED);
+    connection->Close();
+    CHECK(written.size() == 2);
+    CHECK(ReadUInt16(DecodeTnsPacket(written[0], false).payload, 4) == 0x0401);
+    CHECK(ReadUInt16(DecodeTnsPacket(written[1], false).payload, 4) == 0x0001);
 
     // And the seam restores itself: with no factory installed the default is
     // the real transport again, which is what production always uses.
@@ -3766,6 +3876,7 @@ int main() {
     TestPartialLobResponseReadsAsTruncated();
     TestLobRequestLayout();
     TestUtf16BeConversion();
+    TestCharacterLobEncodingSelection();
 #if !defined(_WIN32)
     TestWriteToClosedPeerDoesNotKillTheProcess();
 #endif

@@ -392,6 +392,23 @@ struct TestDatabase {
     Connection con;
 };
 
+void TestDisableOobSecretReachesConnectionConfig() {
+    auto script = std::make_shared<FakeScript>();
+    script->columns = {Column("answer", 2)};
+    script->rows = {{Number("1")}};
+    ConnectionConfig seen;
+    auto factory = ScopedOracleSessionFactory([&](const ConnectionConfig &requested, const std::string &) {
+        seen = requested;
+        return std::make_unique<FakeSession>(script);
+    });
+    TestDatabase database;
+    database.Run("CREATE TEMPORARY SECRET ora_no_oob (TYPE oracle, HOST '127.0.0.1', PORT 1521, "
+                 "SERVICE_NAME 'service', USER 'app_user', PASSWORD 'placeholder', DISABLE_OOB true);");
+    auto result = database.Query("SELECT * FROM oracle_query('ora_no_oob', 'SELECT 1 FROM dual')");
+    CHECK(!result->HasError());
+    CHECK(seen.disable_oob);
+}
+
 std::string ErrorOf(const std::string &sql, const std::shared_ptr<FakeScript> &script) {
     auto factory = InstallFake(script);
     TestDatabase database;
@@ -1576,6 +1593,7 @@ void TestParallelScanShardsOneSnapshot() {
 
 int main() {
 
+    TestDisableOobSecretReachesConnectionConfig();
     TestQueryTypeMappingAndValues();
     TestProjectedColumns();
     TestProtocolFailuresBecomeTypedDuckDbErrors();

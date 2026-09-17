@@ -51,6 +51,18 @@ CREATE TEMPORARY SECRET oracle_test (
     PROTOCOL 'tcp'
 );
 
+statement ok
+CREATE TEMPORARY SECRET oracle_disable_oob_test (
+    TYPE oracle,
+    HOST 'localhost',
+    PORT 1521,
+    SERVICE_NAME 'FREEPDB1',
+    USER 'scott',
+    PASSWORD 'tiger',
+    PROTOCOL 'tcp',
+    DISABLE_OOB true
+);
+
 # TCPS secret fields are accepted before network I/O. The invalid query keeps
 # this test local while exercising protocol/SNI/wallet-secret parsing.
 statement ok

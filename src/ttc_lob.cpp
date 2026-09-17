@@ -11,6 +11,10 @@ namespace {
 
 constexpr size_t MAX_LOCATOR_BYTES = 4096;
 constexpr size_t MAX_LOB_CHUNK_BYTES = 16U << 20U;
+constexpr size_t LOB_LOCATOR_ENCODING_OFFSET = 6;
+constexpr size_t LOB_LOCATOR_FLAGS_OFFSET = 7;
+constexpr uint8_t LOB_LOCATOR_UTF16_FLAG = 0x80;
+constexpr uint8_t LOB_LOCATOR_UTF16_LE_FLAG = 0x40;
 
 } // namespace
 
@@ -76,7 +80,7 @@ TtcLobResponse DecodeTtcLobResponse(const std::vector<uint8_t> &message, size_t 
     return result;
 }
 
-std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16) {
+std::vector<uint8_t> DecodeUtf16ToUtf8(const std::vector<uint8_t> &utf16, bool little_endian) {
     if (utf16.size() % 2 != 0) {
         throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read returned an odd number of UTF-16 bytes");
     }
@@ -100,7 +104,9 @@ std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16) {
         }
     };
     for (size_t index = 0; index + 1 < utf16.size(); index += 2) {
-        const uint32_t unit = (static_cast<uint32_t>(utf16[index]) << 8U) | utf16[index + 1];
+        const uint32_t unit = little_endian ? static_cast<uint32_t>(utf16[index]) |
+                                                 (static_cast<uint32_t>(utf16[index + 1]) << 8U)
+                                           : (static_cast<uint32_t>(utf16[index]) << 8U) | utf16[index + 1];
         if (unit >= 0xD800 && unit <= 0xDBFF) {
             // A high surrogate must be followed by its low half. An unpaired
             // one is not a character, and guessing a replacement would put
@@ -108,7 +114,9 @@ std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16) {
             if (index + 3 >= utf16.size()) {
                 throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read ended on an unpaired UTF-16 surrogate");
             }
-            const uint32_t low = (static_cast<uint32_t>(utf16[index + 2]) << 8U) | utf16[index + 3];
+            const uint32_t low = little_endian ? static_cast<uint32_t>(utf16[index + 2]) |
+                                       (static_cast<uint32_t>(utf16[index + 3]) << 8U)
+                                   : (static_cast<uint32_t>(utf16[index + 2]) << 8U) | utf16[index + 3];
             if (low < 0xDC00 || low > 0xDFFF) {
                 throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read carried an unpaired UTF-16 surrogate");
             }
@@ -122,6 +130,84 @@ std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16) {
         append(unit);
     }
     return result;
+}
+
+namespace {
+
+void ValidateUtf8(const std::vector<uint8_t> &utf8) {
+    for (size_t index = 0; index < utf8.size();) {
+        const auto first = utf8[index];
+        size_t continuation_count = 0;
+        uint8_t second_minimum = 0x80;
+        uint8_t second_maximum = 0xBF;
+        if (first <= 0x7F) {
+            index++;
+            continue;
+        } else if (first >= 0xC2 && first <= 0xDF) {
+            continuation_count = 1;
+        } else if (first == 0xE0) {
+            continuation_count = 2;
+            second_minimum = 0xA0;
+        } else if (first >= 0xE1 && first <= 0xEC) {
+            continuation_count = 2;
+        } else if (first == 0xED) {
+            continuation_count = 2;
+            second_maximum = 0x9F;
+        } else if (first >= 0xEE && first <= 0xEF) {
+            continuation_count = 2;
+        } else if (first == 0xF0) {
+            continuation_count = 3;
+            second_minimum = 0x90;
+        } else if (first >= 0xF1 && first <= 0xF3) {
+            continuation_count = 3;
+        } else if (first == 0xF4) {
+            continuation_count = 3;
+            second_maximum = 0x8F;
+        } else {
+            throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read returned invalid UTF-8");
+        }
+        if (index + continuation_count >= utf8.size() || utf8[index + 1] < second_minimum ||
+            utf8[index + 1] > second_maximum) {
+            throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read returned invalid UTF-8");
+        }
+        for (size_t offset = 2; offset <= continuation_count; offset++) {
+            const auto byte = utf8[index + offset];
+            if (byte < 0x80 || byte > 0xBF) {
+                throw ProtocolError(ProtocolErrorKind::MALFORMED, "a CLOB read returned invalid UTF-8");
+            }
+        }
+        index += continuation_count + 1;
+    }
+}
+
+} // namespace
+
+std::vector<uint8_t> DecodeTtcCharacterLobToUtf8(const std::vector<uint8_t> &content,
+                                                 const std::vector<uint8_t> &locator,
+                                                 uint8_t character_set_form) {
+    if (locator.size() <= LOB_LOCATOR_FLAGS_OFFSET || locator.size() > MAX_LOCATOR_BYTES) {
+        throw ProtocolError(ProtocolErrorKind::MALFORMED, "a character LOB locator is too short or too large");
+    }
+    if (character_set_form == 2) {
+        return DecodeUtf16ToUtf8(content, false);
+    }
+    if (character_set_form != 0 && character_set_form != 1) {
+        throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "a character LOB has an unsupported character set form");
+    }
+    const bool utf16 = (locator[LOB_LOCATOR_ENCODING_OFFSET] & LOB_LOCATOR_UTF16_FLAG) != 0;
+    const bool little_endian = (locator[LOB_LOCATOR_FLAGS_OFFSET] & LOB_LOCATOR_UTF16_LE_FLAG) != 0;
+    if (!utf16 && little_endian) {
+        throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "a character LOB has an unsupported locator encoding");
+    }
+    if (utf16) {
+        return DecodeUtf16ToUtf8(content, little_endian);
+    }
+    ValidateUtf8(content);
+    return content;
+}
+
+std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16) {
+    return DecodeUtf16ToUtf8(utf16, false);
 }
 
 } // namespace oracle_scanner

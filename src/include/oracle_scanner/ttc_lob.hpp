@@ -46,13 +46,14 @@ struct TtcLobResponse {
 // the execute and fetch paths use.
 TtcLobResponse DecodeTtcLobResponse(const std::vector<uint8_t> &message, size_t locator_size);
 
-// A CLOB read comes back as AL16UTF16 — two bytes per BMP character, surrogate
-// pairs above it — whatever the database character set is and whatever the
-// content holds. Live 19c, verified with ASCII and with Cyrillic: ten
-// characters arrive as twenty bytes either way, so the width is the encoding
-// and not an accident of the sample. Every other character value on this wire
-// is UTF-8, so a CLOB is converted here and reaches the rest of the client
-// looking like a VARCHAR2.
+// Converts a character LOB to the UTF-8 bytes used by the rest of the client.
+// Ordinary CLOBs use the encoding selected by their locator, while NCLOBs are
+// always UTF-16BE on this wire. The database character set does not by itself
+// choose how a LOB read is encoded.
+std::vector<uint8_t> DecodeTtcCharacterLobToUtf8(const std::vector<uint8_t> &content,
+                                                 const std::vector<uint8_t> &locator,
+                                                 uint8_t character_set_form);
+
 std::vector<uint8_t> DecodeUtf16BeToUtf8(const std::vector<uint8_t> &utf16);
 
 } // namespace oracle_scanner

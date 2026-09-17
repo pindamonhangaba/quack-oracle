@@ -17,6 +17,8 @@ struct ConnectionConfig {
     TransportProtocol protocol = TransportProtocol::TCP;
     uint32_t connect_timeout_seconds = 10;
     uint32_t read_timeout_seconds = 30;
+    // Disable Oracle Net's TCP urgent-byte capability and CHECK_OOB probe.
+    bool disable_oob = true;
     // TCPS-only settings. wallet_pem_file is an ewallet.pem-compatible PEM
     // bundle containing the client certificate/key and, when needed, its CA.
     std::string tls_server_name;

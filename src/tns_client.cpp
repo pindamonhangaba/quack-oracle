@@ -68,10 +68,10 @@ std::unique_ptr<TnsClientConnection> TnsClientConnection::Connect(const Connecti
                                           protocol == TransportProtocol::TCPS, tls);
         TnsPacketStream handshake_packets(*stream, false);
         TnsConnectOptions connect_options;
-        connect_options.supports_oob = protocol != TransportProtocol::TCPS;
+        connect_options.supports_oob = protocol != TransportProtocol::TCPS && !config.disable_oob;
         auto result = RunTnsConnect(handshake_packets, descriptor, connect_options);
         if (result.disposition == TnsConnectDisposition::ACCEPTED) {
-            if (result.check_oob) {
+            if (result.check_oob && !effective_config.disable_oob) {
                 RunCheckOobProbe(*stream, result.negotiated_sdu);
             }
             return std::unique_ptr<TnsClientConnection>(

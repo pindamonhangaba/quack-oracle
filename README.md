@@ -195,6 +195,7 @@ CREATE SECRET ora_tls (
 | `TLS_SNI_NAME` | Only when the endpoint is an IP or a different virtual host |
 | `TLS_CA_FILE` | An explicit PEM trust list; system roots are then not used |
 | `TLS_SERVER_CERT_DN` | Require this exact certificate subject, in addition to the hostname |
+| `DISABLE_OOB` | Disable Oracle Net's TCP urgent-byte capability and connection-time OOB probe. Defaults to `false` |
 | `CONNECT_TIMEOUT`, `READ_TIMEOUT` | Socket timeouts in seconds |
 
 **A service name, not a SID.** The connect descriptor this client builds always
@@ -502,6 +503,14 @@ Anything else — `NCHAR`, `NVARCHAR2`, `INTERVAL`, `TIMESTAMP WITH LOCAL TIME
 ZONE`, `BFILE`, object and collection types — is **refused when the query is
 bound**, with a message naming the column and the reason. It is never decoded
 into something that looks right and is not.
+
+The connection supports Oracle database character set IDs `873` (`AL32UTF8`)
+and `31` (`WE8ISO8859P1`). It advertises `AL32UTF8` as the client encoding, so
+ordinary character values, SQL text, and binds are exposed as UTF-8. A Latin-1
+database still cannot store every Unicode character; writes outside its
+repertoire retain Oracle's server-side behavior rather than receiving a client
+replacement policy. CLOB decoding follows the locator's encoding flags, while
+NCLOB is decoded as UTF-16BE.
 
 ### Why your table came back as all text
 

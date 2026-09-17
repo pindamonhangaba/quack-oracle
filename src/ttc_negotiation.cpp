@@ -120,8 +120,9 @@ TtcProtocolInfo RunTtcNegotiation(TtcChannel &channel, const TtcNegotiationOptio
         ThrowTtcServerError(protocol_response);
     }
     auto protocol = ParseTtcProtocolResponse(protocol_response);
-    if (protocol.charset_id != ORACLE_CHARSET_AL32UTF8) {
-        throw ProtocolError(ProtocolErrorKind::UNSUPPORTED, "Oracle server selected an unsupported character set");
+    if (protocol.charset_id != ORACLE_CHARSET_AL32UTF8 && protocol.charset_id != ORACLE_CHARSET_WE8ISO8859P1) {
+        throw ProtocolError(ProtocolErrorKind::UNSUPPORTED,
+                            "Oracle server selected unsupported character set " + std::to_string(protocol.charset_id));
     }
     channel.Send(BuildTtcDataTypesRequest(options));
     auto data_types_response = channel.Receive();

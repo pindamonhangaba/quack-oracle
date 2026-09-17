@@ -12,6 +12,7 @@ namespace oracle_scanner {
 constexpr uint8_t TTC_MESSAGE_PROTOCOL = 1;
 constexpr uint8_t TTC_MESSAGE_DATA_TYPES = 2;
 constexpr uint16_t ORACLE_CHARSET_AL32UTF8 = 873;
+constexpr uint16_t ORACLE_CHARSET_WE8ISO8859P1 = 31;
 // Index of TNS_CCAP_FIELD_VERSION in a TTC capability vector, and the value
 // this client advertises in its TTIDTY request. The bundled 19c template
 // carries 12 at that index, and every decoder gate has to agree with what was
@@ -31,6 +32,8 @@ struct TtcProtocolInfo {
     // end-of-call trailer is one, see TTC_FIELD_VERSION_ERROR_TRAILER.
     uint8_t server_field_version = ORACLE_CLIENT_TTC_FIELD_VERSION;
     std::string server_banner;
+    // The server-selected database character set. Client requests continue to
+    // advertise ORACLE_CHARSET_AL32UTF8 independently of this value.
     uint16_t charset_id = 0;
     uint8_t server_flags = 0;
     std::vector<uint8_t> compile_capabilities;
